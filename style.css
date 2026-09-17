@@ -27,11 +27,17 @@ body {
   gap: 16px;
 }
 
+@keyframes titlePulse {
+  0%, 100% { text-shadow: 0 0 8px #e94560, 0 0 20px #e9456055; }
+  50%       { text-shadow: 0 0 18px #e94560, 0 0 40px #e94560aa, 0 0 60px #e9456033; }
+}
+
 h1 {
   font-size: 1.4rem;
   letter-spacing: 4px;
   color: #e94560;
   text-align: center;
+  animation: titlePulse 2s ease-in-out infinite;
 }
 
 .stat-box {
@@ -70,10 +76,16 @@ h1 {
   position: relative;
 }
 
+@keyframes borderGlow {
+  0%, 100% { box-shadow: 0 0 10px #0f3460, 0 0 20px #e9456033; }
+  50%       { box-shadow: 0 0 22px #e94560aa, 0 0 44px #e9456055, 0 0 66px #e9456022; }
+}
+
 #game-canvas {
   display: block;
   border: 2px solid #0f3460;
   background: #0d0d1a;
+  animation: borderGlow 2.5s ease-in-out infinite;
 }
 
 #overlay {
@@ -112,4 +124,26 @@ h1 {
 
 #start-btn:hover {
   background: #c73652;
+}
+
+@keyframes scoreFloat {
+  0%   { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(-90px) scale(1.5); }
+}
+
+.score-popup {
+  position: absolute;
+  font-family: 'Courier New', monospace;
+  font-size: 1.5rem;
+  font-weight: bold;
+  text-shadow: 0 0 12px currentColor;
+  animation: scoreFloat 1.3s ease-out forwards;
+  pointer-events: none;
+  white-space: nowrap;
+  z-index: 10;
+}
+
+.level-up-popup {
+  font-size: 2rem;
+  letter-spacing: 3px;
 }
