@@ -2,6 +2,15 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Git Workflow
+
+After every set of file changes, always:
+1. `git add` the changed files
+2. `git commit` with a descriptive message explaining *what* changed and *why*
+3. `git push origin main`
+
+Do this without being asked. Never leave changes uncommitted.
+
 ## Running the Game
 
 No build step — open `index.html` directly in a browser. There is no dev server, bundler, or package manager.
