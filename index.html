@@ -37,8 +37,21 @@
     <div id="game-area">
       <canvas id="game-canvas" width="300" height="600"></canvas>
       <div id="overlay">
+        <canvas id="logo-canvas" width="290" height="70"></canvas>
         <div id="overlay-text"></div>
         <button id="start-btn">Start Game</button>
+        <button id="settings-btn">⚙ SETTINGS</button>
+        <div id="settings-panel" class="hidden">
+          <p class="settings-title">OPTIONS</p>
+          <label class="settings-row">
+            <input type="checkbox" id="music-toggle" checked>
+            <span>MUSIC</span>
+          </label>
+          <label class="settings-row">
+            <input type="checkbox" id="sfx-toggle" checked>
+            <span>SOUND FX</span>
+          </label>
+        </div>
       </div>
     </div>
   </div>

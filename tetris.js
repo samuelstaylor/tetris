@@ -30,6 +30,8 @@ const canvas = document.getElementById('game-canvas');
 const ctx = canvas.getContext('2d');
 const nextCanvas = document.getElementById('next-canvas');
 const nextCtx = nextCanvas.getContext('2d');
+const logoCanvas = document.getElementById('logo-canvas');
+const logoCtx = logoCanvas.getContext('2d');
 const gameArea = document.getElementById('game-area');
 
 const scoreEl = document.getElementById('score');
@@ -38,6 +40,14 @@ const linesEl = document.getElementById('lines');
 const overlay = document.getElementById('overlay');
 const overlayText = document.getElementById('overlay-text');
 const startBtn = document.getElementById('start-btn');
+const settingsBtn = document.getElementById('settings-btn');
+const settingsPanel = document.getElementById('settings-panel');
+const musicToggle = document.getElementById('music-toggle');
+const sfxToggle = document.getElementById('sfx-toggle');
+
+// --- Settings ---
+let musicOn = true;
+let sfxOn = true;
 
 // --- State ---
 let board, piece, nextPiece, score, level, lines, gameOver, paused, dropInterval, lastTime;
@@ -52,37 +62,30 @@ let shake = { timer: 0 };
 let screenFlash = { alpha: 0, color: '#ffffff' };
 let lockFlash = { cells: [], timer: 0 };
 
-// --- Audio: Korobeiniki (Tetris A-theme) via Web Audio API ---
+// --- Audio ---
 const NOTE = {
   A3: 220.00, E4: 329.63,
   A4: 440.00, B4: 493.88, C5: 523.25, D5: 587.33,
   E5: 659.25, F5: 698.46, G5: 783.99, A5: 880.00,
+  B5: 987.77, E6: 1318.51,
 };
 
-// BPM 160: quarter = 0.375s, eighth = 0.1875s, dotted-quarter = 0.5625s, half = 0.75s
-const Q = 0.375, E = 0.1875, DQ = 0.5625, H = 0.75;
+// BPM 200: quarter=0.3s, eighth=0.15s, dotted-quarter=0.45s, half=0.6s
+const Q = 0.3, E = 0.15, DQ = 0.45, H = 0.6;
 
-// Main melody — 8 bars of 4 beats, loops every 12 seconds
+// Korobeiniki main melody — 8 bars × 4 beats = 9.6s loop
 const MELODY = [
-  // Bar 1
   [NOTE.E5,Q],[NOTE.B4,E],[NOTE.C5,E],[NOTE.D5,Q],[NOTE.C5,E],[NOTE.B4,E],
-  // Bar 2
   [NOTE.A4,Q],[NOTE.A4,E],[NOTE.C5,E],[NOTE.E5,Q],[NOTE.D5,E],[NOTE.C5,E],
-  // Bar 3
   [NOTE.B4,DQ],[NOTE.C5,E],[NOTE.D5,Q],[NOTE.E5,Q],
-  // Bar 4
   [NOTE.C5,Q],[NOTE.A4,Q],[NOTE.A4,H],
-  // Bar 5
   [0,E],[NOTE.D5,E],[NOTE.F5,Q],[NOTE.A5,Q],[NOTE.G5,E],[NOTE.F5,E],
-  // Bar 6
   [NOTE.E5,DQ],[NOTE.C5,E],[NOTE.E5,Q],[NOTE.D5,E],[NOTE.C5,E],
-  // Bar 7
   [NOTE.B4,Q],[NOTE.B4,E],[NOTE.C5,E],[NOTE.D5,Q],[NOTE.E5,Q],
-  // Bar 8
   [NOTE.C5,Q],[NOTE.A4,Q],[NOTE.A4,Q],[0,Q],
 ];
 
-// Bass — 16 half-notes (2 per bar × 8 bars), also loops every 12 seconds
+// Bass — 16 half-notes, also 9.6s loop (starts in sync with melody)
 const BASS = [
   [NOTE.A3,H],[NOTE.E4,H],
   [NOTE.A3,H],[NOTE.E4,H],
@@ -94,73 +97,196 @@ const BASS = [
   [NOTE.A3,H],[NOTE.A3,H],
 ];
 
-let audioCtx = null;
-let themePlaying = false;
-let noteIdx = 0;
-let bassIdx = 0;
-let themeTimer = null;
-let bassTimer = null;
+const LOOP_DURATION = MELODY.reduce((s, [, d]) => s + d, 0); // 9.6s
 
-function scheduleNote() {
-  if (!themePlaying) return;
-  const [freq, dur] = MELODY[noteIdx % MELODY.length];
-  noteIdx++;
-  if (freq > 0) {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'square';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur * 0.85);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + dur * 0.88);
-  }
-  themeTimer = setTimeout(scheduleNote, dur * 1000);
+let audioCtx = null;
+let musicGain = null;
+let sfxGain = null;
+let themePlaying = false;
+let themeTimer = null;
+let loopStartTime = 0;
+
+function ensureAudio() {
+  if (audioCtx) return;
+  audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  musicGain = audioCtx.createGain();
+  musicGain.gain.value = musicOn ? 1 : 0;
+  musicGain.connect(audioCtx.destination);
+  sfxGain = audioCtx.createGain();
+  sfxGain.gain.value = sfxOn ? 1 : 0;
+  sfxGain.connect(audioCtx.destination);
 }
 
-function scheduleBass() {
+// Look-ahead scheduling: all notes for one loop are scheduled at once
+// using absolute AudioContext time offsets — guaranteed sample-accurate sync.
+function scheduleLoop(startTime) {
   if (!themePlaying) return;
-  const [freq, dur] = BASS[bassIdx % BASS.length];
-  bassIdx++;
-  if (freq > 0) {
-    const osc = audioCtx.createOscillator();
-    const gain = audioCtx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0.07, audioCtx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + dur * 0.7);
-    osc.connect(gain);
-    gain.connect(audioCtx.destination);
-    osc.start(audioCtx.currentTime);
-    osc.stop(audioCtx.currentTime + dur * 0.75);
+  loopStartTime = startTime;
+
+  let t = startTime;
+  for (const [freq, dur] of MELODY) {
+    if (freq > 0) {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.13, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.82);
+      osc.connect(g);
+      g.connect(musicGain);
+      osc.start(t);
+      osc.stop(t + dur * 0.85);
+    }
+    t += dur;
   }
-  bassTimer = setTimeout(scheduleBass, dur * 1000);
+
+  t = startTime;
+  for (const [freq, dur] of BASS) {
+    if (freq > 0) {
+      const osc = audioCtx.createOscillator();
+      const g = audioCtx.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0.055, t);
+      g.gain.exponentialRampToValueAtTime(0.001, t + dur * 0.65);
+      osc.connect(g);
+      g.connect(musicGain);
+      osc.start(t);
+      osc.stop(t + dur * 0.7);
+    }
+    t += dur;
+  }
+
+  // Schedule next loop 300ms before this one ends
+  clearTimeout(themeTimer);
+  themeTimer = setTimeout(() => scheduleLoop(startTime + LOOP_DURATION), (LOOP_DURATION - 0.3) * 1000);
 }
 
 function startTheme() {
-  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-  if (audioCtx.state === 'suspended') audioCtx.resume();
+  ensureAudio();
+  audioCtx.resume();
   themePlaying = true;
-  noteIdx = 0;
-  bassIdx = 0;
-  scheduleNote();
-  scheduleBass();
+  const start = audioCtx.currentTime + 0.05;
+  scheduleLoop(start);
 }
 
 function stopTheme() {
   themePlaying = false;
   clearTimeout(themeTimer);
-  clearTimeout(bassTimer);
 }
 
 function pauseTheme() {
-  if (audioCtx) audioCtx.suspend();
+  if (!audioCtx) return;
+  clearTimeout(themeTimer);
+  audioCtx.suspend();
 }
 
 function resumeTheme() {
-  if (audioCtx) audioCtx.resume();
+  if (!audioCtx) return;
+  audioCtx.resume();
+  // Reschedule next-loop timer based on where we are in the current loop
+  const timeRemaining = (loopStartTime + LOOP_DURATION) - audioCtx.currentTime;
+  clearTimeout(themeTimer);
+  if (timeRemaining > 0.3) {
+    themeTimer = setTimeout(() => scheduleLoop(loopStartTime + LOOP_DURATION), (timeRemaining - 0.3) * 1000);
+  } else {
+    scheduleLoop(audioCtx.currentTime + 0.05);
+  }
+}
+
+// --- Sound effects ---
+function playSFX(type) {
+  if (!sfxOn || !audioCtx) return;
+  const t = audioCtx.currentTime;
+
+  function tone(freq, startT, dur, vol = 0.2, wave = 'square') {
+    const osc = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    osc.type = wave;
+    osc.frequency.value = freq;
+    g.gain.setValueAtTime(vol, startT);
+    g.gain.exponentialRampToValueAtTime(0.001, startT + dur);
+    osc.connect(g);
+    g.connect(sfxGain);
+    osc.start(startT);
+    osc.stop(startT + dur + 0.01);
+  }
+
+  switch (type) {
+    case 'lock':
+      tone(130, t, 0.055, 0.15, 'sawtooth');
+      break;
+    case 'clear1':
+      tone(880, t, 0.08, 0.18);
+      tone(1100, t + 0.06, 0.14, 0.16);
+      break;
+    case 'clear2':
+      tone(660, t, 0.07, 0.18);
+      tone(880, t + 0.045, 0.07, 0.18);
+      tone(1100, t + 0.09, 0.18, 0.2);
+      break;
+    case 'clear3':
+      tone(660, t, 0.06, 0.18);
+      tone(880, t + 0.04, 0.06, 0.18);
+      tone(1100, t + 0.08, 0.06, 0.18);
+      tone(1320, t + 0.12, 0.24, 0.22);
+      break;
+    case 'tetris':
+      tone(NOTE.E5, t, 0.09, 0.22);
+      tone(NOTE.G5, t + 0.08, 0.09, 0.22);
+      tone(NOTE.B5, t + 0.16, 0.09, 0.22);
+      tone(NOTE.E6, t + 0.24, 0.5, 0.28);
+      break;
+  }
+}
+
+// --- Logo ---
+const LOGO_MAPS = {
+  T: [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0]],
+  E: [[1,1,1,1,1],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,0],[1,0,0,0,0],[1,0,0,0,0],[1,1,1,1,1]],
+  R: [[1,1,1,1,0],[1,0,0,0,1],[1,0,0,0,1],[1,1,1,1,0],[1,0,1,0,0],[1,0,0,1,0],[1,0,0,0,1]],
+  I: [[1,1,1,1,1],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[0,0,1,0,0],[1,1,1,1,1]],
+  S: [[0,1,1,1,1],[1,0,0,0,0],[1,0,0,0,0],[0,1,1,1,0],[0,0,0,0,1],[0,0,0,0,1],[1,1,1,1,0]],
+};
+
+function drawLogo() {
+  const bs = 8;
+  const lw = 5 * bs;
+  const lh = 7 * bs;
+  const gap = 5;
+  const letters = ['T','E','T','R','I','S'];
+  const colors = ['#00f0f0','#f0f000','#a000f0','#00f000','#f00000','#f0a000'];
+  const totalW = letters.length * lw + (letters.length - 1) * gap;
+  const ox0 = (logoCanvas.width - totalW) / 2;
+  const oy0 = (logoCanvas.height - lh) / 2;
+
+  logoCtx.clearRect(0, 0, logoCanvas.width, logoCanvas.height);
+
+  letters.forEach((letter, i) => {
+    const color = colors[i];
+    const map = LOGO_MAPS[letter];
+    const ox = ox0 + i * (lw + gap);
+    logoCtx.shadowBlur = 14;
+    logoCtx.shadowColor = color;
+    logoCtx.fillStyle = color;
+    for (let r = 0; r < map.length; r++) {
+      for (let c = 0; c < map[r].length; c++) {
+        if (map[r][c]) {
+          logoCtx.fillRect(ox + c * bs + 1, oy0 + r * bs + 1, bs - 2, bs - 2);
+        }
+      }
+    }
+    // Highlight strip
+    logoCtx.shadowBlur = 0;
+    logoCtx.fillStyle = 'rgba(255,255,255,0.3)';
+    for (let r = 0; r < map.length; r++) {
+      for (let c = 0; c < map[r].length; c++) {
+        if (map[r][c]) {
+          logoCtx.fillRect(ox + c * bs + 1, oy0 + r * bs + 1, bs - 2, 2);
+        }
+      }
+    }
+  });
 }
 
 // --- Particle system ---
@@ -202,7 +328,6 @@ function updateDrawParticles() {
   }
 }
 
-// --- Screen shake ---
 function triggerShake(intensity) {
   shake.timer = intensity;
 }
@@ -308,10 +433,12 @@ function lock() {
       lockFlash.cells.push({ x: piece.x + c, y: ny });
     }
   }
-  lockFlash.timer = 8;
+  lockFlash.timer = 6;
+  playSFX('lock');
   clearLines();
   piece = nextPiece;
   nextPiece = randomPiece();
+  softDropTimer = performance.now(); // give new piece a fresh interval
   if (!isValid(piece.matrix, piece.x, piece.y)) {
     endGame();
   }
@@ -347,13 +474,20 @@ function clearLines() {
     showScorePopup(pts, cleared);
 
     if (cleared === 4) {
+      playSFX('tetris');
       screenFlash = { alpha: 0.85, color: '#ffff00' };
       triggerShake(18);
-    } else if (cleared >= 2) {
-      screenFlash = { alpha: 0.55, color: '#ffffff' };
-      triggerShake(9);
+    } else if (cleared === 3) {
+      playSFX('clear3');
+      screenFlash = { alpha: 0.6, color: '#00ffff' };
+      triggerShake(10);
+    } else if (cleared === 2) {
+      playSFX('clear2');
+      screenFlash = { alpha: 0.5, color: '#ffffff' };
+      triggerShake(7);
     } else {
-      screenFlash = { alpha: 0.35, color: '#ffffff' };
+      playSFX('clear1');
+      screenFlash = { alpha: 0.3, color: '#ffffff' };
     }
 
     if (didLevelUp) {
@@ -392,7 +526,6 @@ function drawBlock(context, x, y, colorId, alpha = 1, glow = false) {
 function drawBoard() {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-  // Screen shake
   const sx = shake.timer > 0 ? (Math.random() - 0.5) * shake.timer * 0.9 : 0;
   const sy = shake.timer > 0 ? (Math.random() - 0.5) * shake.timer * 0.9 : 0;
   if (shake.timer > 0) shake.timer--;
@@ -400,7 +533,6 @@ function drawBoard() {
   ctx.save();
   ctx.translate(sx, sy);
 
-  // Grid
   ctx.strokeStyle = 'rgba(255,255,255,0.04)';
   ctx.lineWidth = 1;
   for (let r = 0; r < ROWS; r++) {
@@ -409,16 +541,14 @@ function drawBoard() {
     }
   }
 
-  // Locked blocks
   for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       if (board[r][c]) drawBlock(ctx, c, r, board[r][c], 1, false);
     }
   }
 
-  // Lock flash
   if (lockFlash.timer > 0) {
-    const fa = (lockFlash.timer / 8) * 0.9;
+    const fa = (lockFlash.timer / 6) * 0.85;
     ctx.save();
     ctx.globalAlpha = fa;
     ctx.fillStyle = '#ffffff';
@@ -431,7 +561,6 @@ function drawBoard() {
     lockFlash.timer--;
   }
 
-  // Ghost
   const gy = ghostY();
   for (let r = 0; r < piece.matrix.length; r++) {
     for (let c = 0; c < piece.matrix[r].length; c++) {
@@ -439,19 +568,15 @@ function drawBoard() {
     }
   }
 
-  // Active piece (with neon glow)
   for (let r = 0; r < piece.matrix.length; r++) {
     for (let c = 0; c < piece.matrix[r].length; c++) {
       if (piece.matrix[r][c]) drawBlock(ctx, piece.x + c, piece.y + r, piece.matrix[r][c], 1, true);
     }
   }
 
-  // Particles
   updateDrawParticles();
-
   ctx.restore();
 
-  // Screen flash overlay (outside shake so it covers full canvas)
   if (screenFlash.alpha > 0) {
     ctx.save();
     ctx.globalAlpha = screenFlash.alpha;
@@ -478,18 +603,19 @@ function drawNext() {
 function gameLoop(timestamp) {
   if (gameOver) return;
   if (!paused) {
-    // Soft drop: move piece down every 50ms while key is held
-    if (softDropping && timestamp - softDropTimer >= 50) {
+    // Soft drop: 16ms interval, auto-locks when at bottom
+    if (softDropping && timestamp - softDropTimer >= 16) {
       softDropTimer = timestamp;
       if (isValid(piece.matrix, piece.x, piece.y + 1)) {
         piece.y++;
         score += 1;
         scoreEl.textContent = score;
-        lastTime = timestamp; // reset gravity to avoid double-drop
+        lastTime = timestamp;
+      } else {
+        lock();
       }
     }
 
-    // Gravity
     const delta = timestamp - lastTime;
     if (delta >= dropInterval) {
       lastTime = timestamp;
@@ -531,8 +657,19 @@ document.addEventListener('keydown', e => {
       if (isValid(piece.matrix, piece.x + 1, piece.y)) piece.x++;
       break;
     case 'ArrowDown':
-      softDropping = true;
       e.preventDefault();
+      if (!softDropping) {
+        softDropping = true;
+        softDropTimer = performance.now();
+        // Immediate first step
+        if (isValid(piece.matrix, piece.x, piece.y + 1)) {
+          piece.y++;
+          score += 1;
+          scoreEl.textContent = score;
+        } else {
+          lock();
+        }
+      }
       break;
     case 'ArrowUp':
       tryRotate();
@@ -553,8 +690,24 @@ document.addEventListener('keyup', e => {
   if (e.key === 'ArrowDown') softDropping = false;
 });
 
+// --- Settings ---
+settingsBtn.addEventListener('click', () => {
+  settingsPanel.classList.toggle('hidden');
+});
+
+musicToggle.addEventListener('change', e => {
+  musicOn = e.target.checked;
+  if (musicGain) musicGain.gain.value = musicOn ? 1 : 0;
+});
+
+sfxToggle.addEventListener('change', e => {
+  sfxOn = e.target.checked;
+  if (sfxGain) sfxGain.gain.value = sfxOn ? 1 : 0;
+});
+
 // --- Start / restart ---
 function startGame() {
+  settingsPanel.classList.add('hidden');
   board = createBoard();
   piece = randomPiece();
   nextPiece = randomPiece();
@@ -590,4 +743,6 @@ function endGame() {
 
 startBtn.addEventListener('click', startGame);
 
+// Draw static logo on load
+drawLogo();
 overlayText.textContent = '';
